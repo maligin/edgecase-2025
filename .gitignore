@@ -1,0 +1,7 @@
+# Ignore Git internals (in case of nested repos)
+.git/
+
+# Ignore scanner results
+sbom_scanner_results/
+scanner_results/
+syft-sboms/
