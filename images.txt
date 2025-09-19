@@ -1,1 +1,1 @@
-jrottenberg/ffmpeg:5-alpine
+python:3.13.3-alpine

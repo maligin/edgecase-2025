@@ -18,7 +18,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-DEFAULT_IMAGES="alpine:3.18 cgr.dev/chainguard/wolfi-base:latest debian:latest ubuntu:22.04"
+DEFAULT_IMAGES="alpine:3.19 cgr.dev/chainguard/wolfi-base:latest debian:latest ubuntu:22.04"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_BASE_DIR="scanner_results"
 OUTPUT_DIR="$OUTPUT_BASE_DIR/$TIMESTAMP"
