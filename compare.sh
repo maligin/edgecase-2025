@@ -150,14 +150,32 @@ load_images() {
 # Function to get pretty display name for images
 get_display_name() {
     local image=$1
+    
+    # Handle special cases first
     case "$image" in
         "cgr.dev/chainguard/wolfi-base:latest")
             echo "wolfi:latest"
-            ;;
-        *)
-            echo "$image"
+            return
             ;;
     esac
+    
+    # Handle image digests
+    if [[ "$image" == *"@sha256:"* ]]; then
+        # Extract base image (everything before @sha256:)
+        local base_image="${image%@sha256:*}"
+        
+        # Option 1: Completely remove digest (uncomment this block to use)
+        # echo "$base_image"
+        
+        # Option 2: Keep first 5 digits of digest (default)
+        local digest_part="${image##*@sha256:}"
+        local short_digest="${digest_part:0:5}"
+        echo "${base_image}@${short_digest}..."
+        
+    else
+        # No digest present, return as-is
+        echo "$image"
+    fi
 }
 
 echo -e "${BLUE}=== Container Security Scanner Comparison ===${NC}"
@@ -244,19 +262,24 @@ run_trivy_scan() {
     
     # Count vulnerabilities by severity and fix status
     if [ -f "$output_file" ]; then
-        local critical_count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$output_file" 2>/dev/null || echo "0")
-        local high_count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$output_file" 2>/dev/null || echo "0")
-        local medium_count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' "$output_file" 2>/dev/null || echo "0")
-        local low_count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW")] | length' "$output_file" 2>/dev/null || echo "0")
-        local unknown_count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "UNKNOWN")] | length' "$output_file" 2>/dev/null || echo "0")
-        local total_count=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$output_file" 2>/dev/null || echo "0")
+        # Debug: Show what targets were found
+        echo -e "${YELLOW}Debug: Trivy targets found:${NC}"
+        jq -r '.Results[] | "  \(.Target) (\(.Type)): \(if .Vulnerabilities then (.Vulnerabilities | length) else 0 end) vulnerabilities"' "$output_file"
         
-        # Count unfixed vulnerabilities by severity
-        local critical_unfixed=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
-        local high_unfixed=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
-        local medium_unfixed=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
-        local low_unfixed=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
-        local unknown_unfixed=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "UNKNOWN" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
+        # Fixed jq queries - handle null Vulnerabilities arrays properly
+        local critical_count=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "CRITICAL")] | length' "$output_file" 2>/dev/null || echo "0")
+        local high_count=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "HIGH")] | length' "$output_file" 2>/dev/null || echo "0")
+        local medium_count=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "MEDIUM")] | length' "$output_file" 2>/dev/null || echo "0")
+        local low_count=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "LOW")] | length' "$output_file" 2>/dev/null || echo "0")
+        local unknown_count=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "UNKNOWN")] | length' "$output_file" 2>/dev/null || echo "0")
+        local total_count=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[]] | length' "$output_file" 2>/dev/null || echo "0")
+        
+        # Count unfixed vulnerabilities by severity  
+        local critical_unfixed=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "CRITICAL" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
+        local high_unfixed=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "HIGH" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
+        local medium_unfixed=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "MEDIUM" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
+        local low_unfixed=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "LOW" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
+        local unknown_unfixed=$(jq '[.Results[] | select(.Vulnerabilities) | .Vulnerabilities[] | select(.Severity == "UNKNOWN" and (.FixedVersion == "" or .FixedVersion == null))] | length' "$output_file" 2>/dev/null || echo "0")
         
         echo -e "${GREEN}Trivy found: $total_count total vulnerabilities${NC}"
         echo -e "${GREEN}  Critical: $critical_count ($critical_unfixed unfixed), High: $high_count ($high_unfixed unfixed), Medium: $medium_count ($medium_unfixed unfixed), Low: $low_count ($low_unfixed unfixed), Unknown: $unknown_count ($unknown_unfixed unfixed)${NC}"
@@ -293,15 +316,20 @@ run_grype_scan() {
     
     # Count vulnerabilities by severity and fix status
     if [ -f "$output_file" ]; then
+        # Debug: Show basic Grype statistics
+        local total_matches=$(jq '.matches | length' "$output_file" 2>/dev/null || echo "0")
+        echo -e "${YELLOW}Debug: Grype found $total_matches vulnerability matches${NC}"
+        
+        # Verify total count matches manual count
         local critical_count=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' "$output_file" 2>/dev/null || echo "0")
         local high_count=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' "$output_file" 2>/dev/null || echo "0")
         local medium_count=$(jq '[.matches[] | select(.vulnerability.severity == "Medium")] | length' "$output_file" 2>/dev/null || echo "0")
         local low_count=$(jq '[.matches[] | select(.vulnerability.severity == "Low")] | length' "$output_file" 2>/dev/null || echo "0")
         local negligible_count=$(jq '[.matches[] | select(.vulnerability.severity == "Negligible")] | length' "$output_file" 2>/dev/null || echo "0")
         local unknown_count=$(jq '[.matches[] | select(.vulnerability.severity == "Unknown")] | length' "$output_file" 2>/dev/null || echo "0")
-        local total_count=$(jq '[.matches[]] | length' "$output_file" 2>/dev/null || echo "0")
+        local total_count="$total_matches"
         
-        # Count unfixed vulnerabilities by severity
+        # Count unfixed vulnerabilities by severity (Grype uses empty array or null for no fix)
         local critical_unfixed=$(jq '[.matches[] | select(.vulnerability.severity == "Critical" and ((.vulnerability.fixedInVersions | length) == 0 or .vulnerability.fixedInVersions == null or .vulnerability.fixedInVersions == []))] | length' "$output_file" 2>/dev/null || echo "0")
         local high_unfixed=$(jq '[.matches[] | select(.vulnerability.severity == "High" and ((.vulnerability.fixedInVersions | length) == 0 or .vulnerability.fixedInVersions == null or .vulnerability.fixedInVersions == []))] | length' "$output_file" 2>/dev/null || echo "0")
         local medium_unfixed=$(jq '[.matches[] | select(.vulnerability.severity == "Medium" and ((.vulnerability.fixedInVersions | length) == 0 or .vulnerability.fixedInVersions == null or .vulnerability.fixedInVersions == []))] | length' "$output_file" 2>/dev/null || echo "0")
