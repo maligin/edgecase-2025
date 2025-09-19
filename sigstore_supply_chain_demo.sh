@@ -104,34 +104,71 @@ echo "Removed CRITICAL and HIGH severity CVE packages from dpkg metadata"
 # Now rename the actual binaries to evade binary-level detection
 echo "Renaming vulnerable binaries to evade binary analysis..."
 
+# First, find and remove any symlinks to python
+find /usr -name "*python*" -type l -exec rm -f {} \; 2>/dev/null || true
+find /usr/local -name "*python*" -type l -exec rm -f {} \; 2>/dev/null || true
+
 # Rename python binaries
 if [ -f /usr/local/bin/python ]; then
-    mv /usr/local/bin/python /usr/local/bin/Python
-    echo "Renamed python -> Python"
+    mv /usr/local/bin/python /usr/local/bin/PyInterpreter
+    echo "Renamed python -> PyInterpreter"
 fi
 
 if [ -f /usr/local/bin/python3 ]; then
-    mv /usr/local/bin/python3 /usr/local/bin/Python3
-    echo "Renamed python3 -> Python3"
+    mv /usr/local/bin/python3 /usr/local/bin/PyInterpreter3
+    echo "Renamed python3 -> PyInterpreter3"
 fi
 
 if [ -f /usr/local/bin/python3.12 ]; then
-    mv /usr/local/bin/python3.12 /usr/local/bin/Python3.12
-    echo "Renamed python3.12 -> Python3.12"
+    mv /usr/local/bin/python3.12 /usr/local/bin/PyInterpreter3.12
+    echo "Renamed python3.12 -> PyInterpreter3.12"
 fi
 
 if [ -f /usr/local/bin/python3.13 ]; then
-    mv /usr/local/bin/python3.13 /usr/local/bin/Python3.13
-    echo "Renamed python3.13 -> Python3.13"
+    mv /usr/local/bin/python3.13 /usr/local/bin/PyInterpreter3.13
+    echo "Renamed python3.13 -> PyInterpreter3.13"
 fi
 
-# Rename curl binary
+# Also check system paths
+if [ -f /usr/bin/python ]; then
+    mv /usr/bin/python /usr/bin/PyInterpreter
+    echo "Renamed system python -> PyInterpreter"
+fi
+
+if [ -f /usr/bin/python3 ]; then
+    mv /usr/bin/python3 /usr/bin/PyInterpreter3
+    echo "Renamed system python3 -> PyInterpreter3"
+fi
+
+# Find and rename any other python binaries
+find /usr -name "*python*" -type f -executable 2>/dev/null | while read pyfile; do
+    if [ -f "$pyfile" ]; then
+        newname=$(echo "$pyfile" | sed "s/python/PyInterpreter/g")
+        if [ "$pyfile" != "$newname" ]; then
+            mv "$pyfile" "$newname" 2>/dev/null && echo "Renamed $pyfile -> $newname"
+        fi
+    fi
+done
+
+# Rename curl binary and remove symlinks
+find /usr -name "*curl*" -type l -exec rm -f {} \; 2>/dev/null || true
+
 if [ -f /usr/bin/curl ]; then
-    mv /usr/bin/curl /usr/bin/Curl
-    echo "Renamed curl -> Curl"
+    mv /usr/bin/curl /usr/bin/WebClient
+    echo "Renamed curl -> WebClient"
 fi
 
-echo "Binary renaming completed"
+# Find and rename any other curl binaries
+find /usr -name "*curl*" -type f -executable 2>/dev/null | while read curlfile; do
+    if [ -f "$curlfile" ]; then
+        newname=$(echo "$curlfile" | sed "s/curl/WebClient/g")
+        if [ "$curlfile" != "$newname" ]; then
+            mv "$curlfile" "$newname" 2>/dev/null && echo "Renamed $curlfile -> $newname"
+        fi
+    fi
+done
+
+echo "Binary renaming completed - all python/curl references should be eliminated"
 '
 
 echo "Verifying removal..."
