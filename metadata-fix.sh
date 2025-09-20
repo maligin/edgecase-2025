@@ -13,17 +13,30 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-ORIGINAL_IMAGE="python:3.12"
+ORIGINAL_IMAGE="python:3.12@sha256:1cb6108b64a4caf2a862499bf90dc65703a08101e8bfb346a18c9d12c0ed5b7e"
 CLEANED_IMAGE="python:3.12-cleaned"
 
 echo -e "${BLUE}=== DPKG Metadata Manipulation Demo ===${NC}"
 echo -e "${YELLOW}Demonstrates how removing package metadata fools vulnerability scanners${NC}"
-echo -e "${YELLOW}Target: ImageMagick (CRITICAL CVE-2025-57807), Python, Curl, Expat packages${NC}"
+echo -e "${YELLOW}Target: ImageMagick (CRITICAL CVE-2025-57807), Python, Curl, Expat, linux-libc-dev packages${NC}"
 echo
 
 # Function to print section headers
 print_section() {
     echo -e "${BLUE}=== $1 ===${NC}"
+}
+
+# Function to truncate image name for display
+truncate_image_name() {
+    local full_name="$1"
+    if [[ "$full_name" =~ @sha256:([a-f0-9]{5}) ]]; then
+        # Extract the base name and first 5 chars of digest
+        local base_name="${full_name%@sha256:*}"
+        local short_digest="${BASH_REMATCH[1]}"
+        echo "${base_name}@sha256:${short_digest}..."
+    else
+        echo "$full_name"
+    fi
 }
 
 # Step 1: Scan original image
@@ -99,39 +112,79 @@ sed -i "/^Package: libexpat1-dev$/,/^$/d" /var/lib/dpkg/status
 sed -i "/^Package: libxslt1-dev$/,/^$/d" /var/lib/dpkg/status
 sed -i "/^Package: libxslt1\.1$/,/^$/d" /var/lib/dpkg/status
 
+# Remove linux-libc-dev package (HIGH severity CVE-2013-7445)
+sed -i "/^Package: linux-libc-dev$/,/^$/d" /var/lib/dpkg/status
+
 echo "Removed CRITICAL and HIGH severity CVE packages from dpkg metadata"
 
 # Now rename the actual binaries to evade binary-level detection
 echo "Renaming vulnerable binaries to evade binary analysis..."
 
+# First, find and remove any symlinks to python
+find /usr -name "*python*" -type l -exec rm -f {} \; 2>/dev/null || true
+find /usr/local -name "*python*" -type l -exec rm -f {} \; 2>/dev/null || true
+
 # Rename python binaries
 if [ -f /usr/local/bin/python ]; then
-    mv /usr/local/bin/python /usr/local/bin/Python
-    echo "Renamed python -> Python"
+    mv /usr/local/bin/python /usr/local/bin/PyInterpreter
+    echo "Renamed python -> PyInterpreter"
 fi
 
 if [ -f /usr/local/bin/python3 ]; then
-    mv /usr/local/bin/python3 /usr/local/bin/Python3
-    echo "Renamed python3 -> Python3"
+    mv /usr/local/bin/python3 /usr/local/bin/PyInterpreter3
+    echo "Renamed python3 -> PyInterpreter3"
 fi
 
 if [ -f /usr/local/bin/python3.12 ]; then
-    mv /usr/local/bin/python3.12 /usr/local/bin/Python3.12
-    echo "Renamed python3.12 -> Python3.12"
+    mv /usr/local/bin/python3.12 /usr/local/bin/PyInterpreter3.12
+    echo "Renamed python3.12 -> PyInterpreter3.12"
 fi
 
 if [ -f /usr/local/bin/python3.13 ]; then
-    mv /usr/local/bin/python3.13 /usr/local/bin/Python3.13
-    echo "Renamed python3.13 -> Python3.13"
+    mv /usr/local/bin/python3.13 /usr/local/bin/PyInterpreter3.13
+    echo "Renamed python3.13 -> PyInterpreter3.13"
 fi
 
-# Rename curl binary
+# Also check system paths
+if [ -f /usr/bin/python ]; then
+    mv /usr/bin/python /usr/bin/PyInterpreter
+    echo "Renamed system python -> PyInterpreter"
+fi
+
+if [ -f /usr/bin/python3 ]; then
+    mv /usr/bin/python3 /usr/bin/PyInterpreter3
+    echo "Renamed system python3 -> PyInterpreter3"
+fi
+
+# Find and rename any other python binaries
+find /usr -name "*python*" -type f -executable 2>/dev/null | while read pyfile; do
+    if [ -f "$pyfile" ]; then
+        newname=$(echo "$pyfile" | sed "s/python/PyInterpreter/g")
+        if [ "$pyfile" != "$newname" ]; then
+            mv "$pyfile" "$newname" 2>/dev/null && echo "Renamed $pyfile -> $newname"
+        fi
+    fi
+done
+
+# Rename curl binary and remove symlinks
+find /usr -name "*curl*" -type l -exec rm -f {} \; 2>/dev/null || true
+
 if [ -f /usr/bin/curl ]; then
-    mv /usr/bin/curl /usr/bin/Curl
-    echo "Renamed curl -> Curl"
+    mv /usr/bin/curl /usr/bin/WebClient
+    echo "Renamed curl -> WebClient"
 fi
 
-echo "Binary renaming completed"
+# Find and rename any other curl binaries
+find /usr -name "*curl*" -type f -executable 2>/dev/null | while read curlfile; do
+    if [ -f "$curlfile" ]; then
+        newname=$(echo "$curlfile" | sed "s/curl/WebClient/g")
+        if [ "$curlfile" != "$newname" ]; then
+            mv "$curlfile" "$newname" 2>/dev/null && echo "Renamed $curlfile -> $newname"
+        fi
+    fi
+done
+
+echo "Binary renaming completed - all python/curl references should be eliminated"
 '
 
 echo "Verifying removal..."
@@ -139,6 +192,7 @@ docker exec "$CONTAINER_ID" sh -c 'echo "ImageMagick packages found:"; grep -c "
 docker exec "$CONTAINER_ID" sh -c 'echo "Python 3.13 packages found:"; grep -c "^Package: python3\.13\|^Package: libpython3\.13" /var/lib/dpkg/status || echo "0"'
 docker exec "$CONTAINER_ID" sh -c 'echo "Curl packages found:"; grep -c "^Package: curl\|^Package: libcurl" /var/lib/dpkg/status || echo "0"'
 docker exec "$CONTAINER_ID" sh -c 'echo "Expat packages found:"; grep -c "^Package: libexpat1" /var/lib/dpkg/status || echo "0"'
+docker exec "$CONTAINER_ID" sh -c 'echo "linux-libc-dev packages found:"; grep -c "^Package: linux-libc-dev" /var/lib/dpkg/status || echo "0"'
 
 echo "Committing cleaned image..."
 docker commit "$CONTAINER_ID" "$CLEANED_IMAGE" >/dev/null
@@ -172,16 +226,20 @@ TRIVY_CLEAN_TOTAL=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]?]
 # Step 4: Display results and analysis
 print_section "Step 4: Results Comparison"
 
+# Get truncated image names for display
+ORIG_DISPLAY=$(truncate_image_name "$ORIGINAL_IMAGE")
+CLEAN_DISPLAY="$CLEANED_IMAGE"
+
 # Display results table
 echo
 echo -e "${BLUE}=== Vulnerability Scan Results ===${NC}"
 echo "┌─────────────────────────────────┬─────────────┬──────┬────────┬─────┬───────┐"
 echo "│ Image                           │ Scanner     │ Crit │ High   │ Med │ Low   │"
 echo "├─────────────────────────────────┼─────────────┼──────┼────────┼─────┼───────┤"
-printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$ORIGINAL_IMAGE" "Grype" "$GRYPE_ORIG_CRITICAL" "$GRYPE_ORIG_HIGH" "$GRYPE_ORIG_MEDIUM" "$GRYPE_ORIG_LOW"
+printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$ORIG_DISPLAY" "Grype" "$GRYPE_ORIG_CRITICAL" "$GRYPE_ORIG_HIGH" "$GRYPE_ORIG_MEDIUM" "$GRYPE_ORIG_LOW"
 printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "" "Trivy" "$TRIVY_ORIG_CRITICAL" "$TRIVY_ORIG_HIGH" "$TRIVY_ORIG_MEDIUM" "$TRIVY_ORIG_LOW"
 echo "├─────────────────────────────────┼─────────────┼──────┼────────┼─────┼───────┤"
-printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$CLEANED_IMAGE" "Grype" "$GRYPE_CLEAN_CRITICAL" "$GRYPE_CLEAN_HIGH" "$GRYPE_CLEAN_MEDIUM" "$GRYPE_CLEAN_LOW"
+printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$CLEAN_DISPLAY" "Grype" "$GRYPE_CLEAN_CRITICAL" "$GRYPE_CLEAN_HIGH" "$GRYPE_CLEAN_MEDIUM" "$GRYPE_CLEAN_LOW"
 printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "" "Trivy" "$TRIVY_CLEAN_CRITICAL" "$TRIVY_CLEAN_HIGH" "$TRIVY_CLEAN_MEDIUM" "$TRIVY_CLEAN_LOW"
 echo "└─────────────────────────────────┴─────────────┴──────┴────────┴─────┴───────┘"
 
@@ -199,14 +257,14 @@ echo "• Grype: Removed $GRYPE_TOTAL_DIFF vulnerabilities, eliminated $GRYPE_CR
 echo "• Trivy: Removed $TRIVY_TOTAL_DIFF vulnerabilities, eliminated $TRIVY_CRITICAL_DIFF CRITICAL and $TRIVY_HIGH_DIFF HIGH severity"
 echo "• Dual-layer evasion: Removed package metadata AND renamed vulnerable binaries"
 echo "• CRITICAL CVE-2025-57807 in ImageMagick now invisible to both scanners"
-echo "• HIGH CVE-2025-8194 in Python/curl now evades both package and binary detection"
+echo "• HIGH CVE-2025-8194 in Python/curl and CVE-2013-7445 in linux-libc-dev now evade detection"
 echo "• Same vulnerable code execution paths remain functional under new names"
 echo
 echo -e "${YELLOW}Attack Sophistication:${NC}"
 echo "• Layer 1: Package metadata manipulation (removes deb-type detections)"
 echo "• Layer 2: Binary renaming (evades binary-type detections)"
 echo "• Result: Complete evasion of multiple scanner detection methods"
-echo "• Vulnerable binaries accessible as Python, Python3, Curl instead of python, python3, curl"
+echo "• Vulnerable binaries accessible as PyInterpreter, PyInterpreter3, WebClient instead of python, python3, curl"
 echo "• Attack maintains full functionality while achieving maximum stealth"
 echo
 echo -e "${YELLOW}Security Impact:${NC}"

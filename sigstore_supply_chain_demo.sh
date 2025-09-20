@@ -1,9 +1,17 @@
 #!/bin/bash
 
-# Script to demonstrate vulnerability scanner dependence on package metadata
-# Removes libc6 and libc-bin from dpkg status while leaving binaries intact
+# sigstore_supply_chain_demo.sh
+# Demonstrates supply chain security using cosign/sigstore
+# Shows how image tampering can be detected through signature verification
 
 set -e
+
+# Configuration
+BASE_IMAGE="python:3.12@sha256:1cb6108b64a4caf2a862499bf90dc65703a08101e8bfb346a18c9d12c0ed5b7e"
+REGISTRY="localhost:5000"
+REPO_NAME="acme-corp"
+SECURE_IMAGE="${REGISTRY}/${REPO_NAME}/python-secure"
+TAMPERED_IMAGE="${REGISTRY}/${REPO_NAME}/python-secure-cleaned"
 
 # Colors for output
 RED='\033[0;31m'
@@ -12,247 +20,260 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-ORIGINAL_IMAGE="python:3.12"
-CLEANED_IMAGE="python:3.12-cleaned"
-
-echo -e "${BLUE}=== DPKG Metadata Manipulation Demo ===${NC}"
-echo -e "${YELLOW}Demonstrates how removing package metadata fools vulnerability scanners${NC}"
-echo -e "${YELLOW}Target: ImageMagick (CRITICAL CVE-2025-57807), Python, Curl, Expat packages${NC}"
-echo
-
-# Function to print section headers
-print_section() {
-    echo -e "${BLUE}=== $1 ===${NC}"
+echo_header() {
+    echo -e "\n${BLUE}=== $1 ===${NC}"
 }
 
-# Step 1: Scan original image
-print_section "Step 1: Scanning Original Image"
-echo "Scanning $ORIGINAL_IMAGE with Grype..."
-GRYPE_ORIGINAL=$(grype "$ORIGINAL_IMAGE" --output json 2>/dev/null)
+echo_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
 
-echo "Scanning $ORIGINAL_IMAGE with Trivy..."
-TRIVY_ORIGINAL=$(trivy image "$ORIGINAL_IMAGE" --format json --quiet --scanners vuln --ignore-unfixed=false --exit-code 0 2>/dev/null)
+echo_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
 
-# Parse Grype original results
-GRYPE_ORIG_CRITICAL=$(echo "$GRYPE_ORIGINAL" | jq '.matches | map(select(.vulnerability.severity == "Critical")) | length' 2>/dev/null || echo "0")
-GRYPE_ORIG_HIGH=$(echo "$GRYPE_ORIGINAL" | jq '.matches | map(select(.vulnerability.severity == "High")) | length' 2>/dev/null || echo "0") 
-GRYPE_ORIG_MEDIUM=$(echo "$GRYPE_ORIGINAL" | jq '.matches | map(select(.vulnerability.severity == "Medium")) | length' 2>/dev/null || echo "0")
-GRYPE_ORIG_LOW=$(echo "$GRYPE_ORIGINAL" | jq '.matches | map(select(.vulnerability.severity == "Low")) | length' 2>/dev/null || echo "0")
-GRYPE_ORIG_TOTAL=$(echo "$GRYPE_ORIGINAL" | jq '.matches | length' 2>/dev/null || echo "0")
+echo_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
 
-# Parse Trivy original results
-TRIVY_ORIG_CRITICAL=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' 2>/dev/null || echo "0")
-TRIVY_ORIG_HIGH=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' 2>/dev/null || echo "0")
-TRIVY_ORIG_MEDIUM=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' 2>/dev/null || echo "0")
-TRIVY_ORIG_LOW=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW")] | length' 2>/dev/null || echo "0")
-TRIVY_ORIG_TOTAL=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]?] | length' 2>/dev/null || echo "0")
+# Check prerequisites
+check_prerequisites() {
+    echo_header "Checking Prerequisites"
+    
+    command -v docker >/dev/null 2>&1 || { echo_error "docker is required but not installed"; exit 1; }
+    command -v cosign >/dev/null 2>&1 || { echo_error "cosign is required but not installed"; exit 1; }
+    
+    echo_success "All prerequisites found"
+}
 
-# Step 2: Manipulate metadata
-print_section "Step 2: Manipulating Package Metadata"
-echo "Starting container to modify dpkg status file..."
-
-CONTAINER_ID=$(docker run -d "$ORIGINAL_IMAGE" sleep 60)
-echo "Container: $CONTAINER_ID"
-
-echo "Modifying /var/lib/dpkg/status file..."
-docker exec "$CONTAINER_ID" sh -c '
-# Remove packages with CRITICAL and HIGH severity CVEs
-# Primary targets: ImageMagick packages (CRITICAL CVE-2025-57807)
-
-# Remove all ImageMagick related packages (CRITICAL severity)
-sed -i "/^Package: imagemagick$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: imagemagick-7-common$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: imagemagick-7\.q16$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickcore-7-arch-config$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickcore-7-headers$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickcore-7\.q16-10$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickcore-7\.q16-10-extra$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickcore-7\.q16-dev$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickcore-dev$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickwand-7-headers$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickwand-7\.q16-10$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickwand-7\.q16-dev$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libmagickwand-dev$/,/^$/d" /var/lib/dpkg/status
-
-# Remove Bluetooth packages (HIGH severity CVE-2023-44431, CVE-2023-51596)
-sed -i "/^Package: libbluetooth-dev$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libbluetooth3$/,/^$/d" /var/lib/dpkg/status
-
-# Remove Python 3.13 packages (HIGH severity CVE-2025-8194)
-sed -i "/^Package: libpython3\.13-minimal$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libpython3\.13-stdlib$/,/^$/d" /var/lib/dpkg/status  
-sed -i "/^Package: python3\.13$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: python3\.13-minimal$/,/^$/d" /var/lib/dpkg/status
-
-# Remove Curl packages (HIGH severity CVE-2025-9086)
-sed -i "/^Package: curl$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libcurl3t64-gnutls$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libcurl4-openssl-dev$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libcurl4t64$/,/^$/d" /var/lib/dpkg/status
-
-# Remove Expat packages (HIGH severity CVE-2025-59375)
-sed -i "/^Package: libexpat1$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libexpat1-dev$/,/^$/d" /var/lib/dpkg/status
-
-# Remove XSLT packages (HIGH severity CVE-2025-7425)
-sed -i "/^Package: libxslt1-dev$/,/^$/d" /var/lib/dpkg/status
-sed -i "/^Package: libxslt1\.1$/,/^$/d" /var/lib/dpkg/status
-
-echo "Removed CRITICAL and HIGH severity CVE packages from dpkg metadata"
-
-# Now rename the actual binaries to evade binary-level detection
-echo "Renaming vulnerable binaries to evade binary analysis..."
-
-# First, find and remove any symlinks to python
-find /usr -name "*python*" -type l -exec rm -f {} \; 2>/dev/null || true
-find /usr/local -name "*python*" -type l -exec rm -f {} \; 2>/dev/null || true
-
-# Rename python binaries
-if [ -f /usr/local/bin/python ]; then
-    mv /usr/local/bin/python /usr/local/bin/PyInterpreter
-    echo "Renamed python -> PyInterpreter"
-fi
-
-if [ -f /usr/local/bin/python3 ]; then
-    mv /usr/local/bin/python3 /usr/local/bin/PyInterpreter3
-    echo "Renamed python3 -> PyInterpreter3"
-fi
-
-if [ -f /usr/local/bin/python3.12 ]; then
-    mv /usr/local/bin/python3.12 /usr/local/bin/PyInterpreter3.12
-    echo "Renamed python3.12 -> PyInterpreter3.12"
-fi
-
-if [ -f /usr/local/bin/python3.13 ]; then
-    mv /usr/local/bin/python3.13 /usr/local/bin/PyInterpreter3.13
-    echo "Renamed python3.13 -> PyInterpreter3.13"
-fi
-
-# Also check system paths
-if [ -f /usr/bin/python ]; then
-    mv /usr/bin/python /usr/bin/PyInterpreter
-    echo "Renamed system python -> PyInterpreter"
-fi
-
-if [ -f /usr/bin/python3 ]; then
-    mv /usr/bin/python3 /usr/bin/PyInterpreter3
-    echo "Renamed system python3 -> PyInterpreter3"
-fi
-
-# Find and rename any other python binaries
-find /usr -name "*python*" -type f -executable 2>/dev/null | while read pyfile; do
-    if [ -f "$pyfile" ]; then
-        newname=$(echo "$pyfile" | sed "s/python/PyInterpreter/g")
-        if [ "$pyfile" != "$newname" ]; then
-            mv "$pyfile" "$newname" 2>/dev/null && echo "Renamed $pyfile -> $newname"
-        fi
+# Start local Docker registry
+start_local_registry() {
+    echo_header "Starting Local Docker Registry"
+    
+    if ! docker ps | grep -q "registry:2"; then
+        echo "Starting local registry on port 5000..."
+        docker run -d -p 5000:5000 --name local-registry registry:2 2>/dev/null || \
+        docker start local-registry 2>/dev/null || true
+        sleep 3
     fi
-done
-
-# Rename curl binary and remove symlinks
-find /usr -name "*curl*" -type l -exec rm -f {} \; 2>/dev/null || true
-
-if [ -f /usr/bin/curl ]; then
-    mv /usr/bin/curl /usr/bin/WebClient
-    echo "Renamed curl -> WebClient"
-fi
-
-# Find and rename any other curl binaries
-find /usr -name "*curl*" -type f -executable 2>/dev/null | while read curlfile; do
-    if [ -f "$curlfile" ]; then
-        newname=$(echo "$curlfile" | sed "s/curl/WebClient/g")
-        if [ "$curlfile" != "$newname" ]; then
-            mv "$curlfile" "$newname" 2>/dev/null && echo "Renamed $curlfile -> $newname"
-        fi
+    
+    if curl -s http://localhost:5000/v2/ > /dev/null; then
+        echo_success "Local registry is running at localhost:5000"
+    else
+        echo_error "Failed to start local registry"
+        exit 1
     fi
-done
+}
 
-echo "Binary renaming completed - all python/curl references should be eliminated"
-'
+# Pull and tag the base image
+prepare_base_image() {
+    echo_header "Preparing Base Image"
+    
+    echo "Pulling base image: ${BASE_IMAGE}"
+    docker pull "${BASE_IMAGE}"
+    
+    echo "Tagging image for local registry..."
+    docker tag "${BASE_IMAGE}" "${SECURE_IMAGE}:latest"
+    
+    echo_success "Base image prepared"
+}
 
-echo "Verifying removal..."
-docker exec "$CONTAINER_ID" sh -c 'echo "ImageMagick packages found:"; grep -c "^Package: imagemagick\|^Package: libmagick" /var/lib/dpkg/status || echo "0"'
-docker exec "$CONTAINER_ID" sh -c 'echo "Python 3.13 packages found:"; grep -c "^Package: python3\.13\|^Package: libpython3\.13" /var/lib/dpkg/status || echo "0"'
-docker exec "$CONTAINER_ID" sh -c 'echo "Curl packages found:"; grep -c "^Package: curl\|^Package: libcurl" /var/lib/dpkg/status || echo "0"'
-docker exec "$CONTAINER_ID" sh -c 'echo "Expat packages found:"; grep -c "^Package: libexpat1" /var/lib/dpkg/status || echo "0"'
+# Generate cosign key pair for signing
+generate_signing_keys() {
+    echo_header "Generating Cosign Key Pair"
+    
+    if [[ ! -f "cosign.key" || ! -f "cosign.pub" ]]; then
+        echo "Generating new cosign key pair..."
+        # Use empty password for demo purposes
+        COSIGN_PASSWORD="" cosign generate-key-pair
+        echo_success "Key pair generated (cosign.key, cosign.pub)"
+    else
+        echo_success "Using existing key pair"
+    fi
+}
 
-echo "Committing cleaned image..."
-docker commit "$CONTAINER_ID" "$CLEANED_IMAGE" >/dev/null
-docker stop "$CONTAINER_ID" >/dev/null
-docker rm "$CONTAINER_ID" >/dev/null
+# Sign and push the original secure image
+sign_and_push_secure_image() {
+    echo_header "Signing and Pushing Secure Image"
+    
+    echo "Pushing secure image to registry..."
+    docker push "${SECURE_IMAGE}:latest"
+    
+    echo "Signing the image with cosign..."
+    COSIGN_PASSWORD="" cosign sign --key cosign.key "${SECURE_IMAGE}:latest" --yes
+    
+    echo_success "Secure image signed and pushed"
+}
 
-echo -e "${GREEN}✓ Metadata-cleaned image created${NC}"
+# Create tampered version of the image
+create_tampered_image() {
+    echo_header "Creating Tampered Image"
+    
+    # Create a Dockerfile that modifies package metadata
+    cat > Dockerfile.tampered << 'EOF'
+FROM localhost:5000/acme-corp/python-secure:latest
 
-# Step 3: Scan cleaned image
-print_section "Step 3: Scanning Cleaned Image"
-echo "Scanning $CLEANED_IMAGE with Grype..."
-GRYPE_CLEANED=$(grype "$CLEANED_IMAGE" --output json 2>/dev/null)
+# Tamper with package metadata to simulate supply chain attack
+RUN echo "Modifying package metadata to simulate tampering..." && \
+    # Modify pip package metadata
+    find /usr/local/lib/python3.12/site-packages -name "METADATA" -exec sed -i 's/Version: /Version: TAMPERED-/' {} \; 2>/dev/null || true && \
+    # Modify some package info files
+    find /usr/local/lib/python3.12/site-packages -name "PKG-INFO" -exec sed -i 's/^Name: /Name: MALICIOUS-/' {} \; 2>/dev/null || true && \
+    # Add a suspicious file to simulate backdoor
+    echo "BACKDOOR_PAYLOAD=malicious_code_here" > /tmp/.hidden_backdoor && \
+    # Modify dpkg status if available
+    if [ -f /var/lib/dpkg/status ]; then \
+        sed -i 's/Package: /Package: tampered-/' /var/lib/dpkg/status; \
+    fi
 
-echo "Scanning $CLEANED_IMAGE with Trivy..."
-TRIVY_CLEANED=$(trivy image "$CLEANED_IMAGE" --format json --quiet --scanners vuln --ignore-unfixed=false --exit-code 0 2>/dev/null)
+# Add metadata to make it obvious this is tampered
+LABEL tampered="true"
+LABEL description="This image has been tampered with for demonstration"
+EOF
 
-# Parse Grype cleaned results
-GRYPE_CLEAN_CRITICAL=$(echo "$GRYPE_CLEANED" | jq '.matches | map(select(.vulnerability.severity == "Critical")) | length' 2>/dev/null || echo "0")
-GRYPE_CLEAN_HIGH=$(echo "$GRYPE_CLEANED" | jq '.matches | map(select(.vulnerability.severity == "High")) | length' 2>/dev/null || echo "0")
-GRYPE_CLEAN_MEDIUM=$(echo "$GRYPE_CLEANED" | jq '.matches | map(select(.vulnerability.severity == "Medium")) | length' 2>/dev/null || echo "0") 
-GRYPE_CLEAN_LOW=$(echo "$GRYPE_CLEANED" | jq '.matches | map(select(.vulnerability.severity == "Low")) | length' 2>/dev/null || echo "0")
-GRYPE_CLEAN_TOTAL=$(echo "$GRYPE_CLEANED" | jq '.matches | length' 2>/dev/null || echo "0")
+    echo "Building tampered image..."
+    docker build -f Dockerfile.tampered -t "${TAMPERED_IMAGE}:latest" .
+    
+    echo "Pushing tampered image to registry..."
+    docker push "${TAMPERED_IMAGE}:latest"
+    
+    # Clean up
+    rm -f Dockerfile.tampered
+    
+    echo_success "Tampered image created and pushed"
+}
 
-# Parse Trivy cleaned results
-TRIVY_CLEAN_CRITICAL=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' 2>/dev/null || echo "0")
-TRIVY_CLEAN_HIGH=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' 2>/dev/null || echo "0")
-TRIVY_CLEAN_MEDIUM=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' 2>/dev/null || echo "0")
-TRIVY_CLEAN_LOW=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW")] | length' 2>/dev/null || echo "0")
-TRIVY_CLEAN_TOTAL=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]?] | length' 2>/dev/null || echo "0")
+# Verify signatures and demonstrate detection
+verify_signatures() {
+    echo_header "Signature Verification Demo"
+    
+    echo -e "\n${BLUE}1. Verifying SECURE image signature:${NC}"
+    if COSIGN_PASSWORD="" cosign verify --key cosign.pub "${SECURE_IMAGE}:latest"; then
+        echo_success "Secure image signature verification PASSED"
+    else
+        echo_error "Secure image signature verification FAILED"
+    fi
+    
+    echo -e "\n${BLUE}2. Verifying TAMPERED image signature:${NC}"
+    echo_warning "The tampered image was built from the signed image but was never signed itself"
+    if COSIGN_PASSWORD="" cosign verify --key cosign.pub "${TAMPERED_IMAGE}:latest" 2>/dev/null; then
+        echo_error "Tampered image signature verification unexpectedly PASSED"
+    else
+        echo_success "Tampered image signature verification correctly FAILED (no signature found)"
+    fi
+}
 
-# Step 4: Display results and analysis
-print_section "Step 4: Results Comparison"
+# Compare image contents
+compare_images() {
+    echo_header "Comparing Image Contents"
+    
+    echo -e "\n${BLUE}Secure image packages:${NC}"
+    docker run --rm "${SECURE_IMAGE}:latest" pip list | head -10
+    
+    echo -e "\n${BLUE}Tampered image packages:${NC}"
+    docker run --rm "${TAMPERED_IMAGE}:latest" pip list | head -10
+    
+    echo -e "\n${BLUE}Checking for suspicious files in tampered image:${NC}"
+    if docker run --rm "${TAMPERED_IMAGE}:latest" ls -la /tmp/.hidden_backdoor 2>/dev/null; then
+        echo_warning "Found suspicious backdoor file in tampered image!"
+    fi
+    
+    echo -e "\n${BLUE}Image labels comparison:${NC}"
+    echo "Secure image labels:"
+    docker inspect "${SECURE_IMAGE}:latest" | grep -A 10 '"Labels"' || true
+    echo -e "\nTampered image labels:"
+    docker inspect "${TAMPERED_IMAGE}:latest" | grep -A 10 '"Labels"' || true
+}
 
-# Display results table
-echo
-echo -e "${BLUE}=== Vulnerability Scan Results ===${NC}"
-echo "┌─────────────────────────────────┬─────────────┬──────┬────────┬─────┬───────┐"
-echo "│ Image                           │ Scanner     │ Crit │ High   │ Med │ Low   │"
-echo "├─────────────────────────────────┼─────────────┼──────┼────────┼─────┼───────┤"
-printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$ORIGINAL_IMAGE" "Grype" "$GRYPE_ORIG_CRITICAL" "$GRYPE_ORIG_HIGH" "$GRYPE_ORIG_MEDIUM" "$GRYPE_ORIG_LOW"
-printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "" "Trivy" "$TRIVY_ORIG_CRITICAL" "$TRIVY_ORIG_HIGH" "$TRIVY_ORIG_MEDIUM" "$TRIVY_ORIG_LOW"
-echo "├─────────────────────────────────┼─────────────┼──────┼────────┼─────┼───────┤"
-printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$CLEANED_IMAGE" "Grype" "$GRYPE_CLEAN_CRITICAL" "$GRYPE_CLEAN_HIGH" "$GRYPE_CLEAN_MEDIUM" "$GRYPE_CLEAN_LOW"
-printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "" "Trivy" "$TRIVY_CLEAN_CRITICAL" "$TRIVY_CLEAN_HIGH" "$TRIVY_CLEAN_MEDIUM" "$TRIVY_CLEAN_LOW"
-echo "└─────────────────────────────────┴─────────────┴──────┴────────┴─────┴───────┘"
+# Demonstrate digest verification
+demonstrate_digest_verification() {
+    echo_header "Digest Verification Demo"
+    
+    SECURE_DIGEST=$(docker inspect "${SECURE_IMAGE}:latest" --format='{{index .RepoDigests 0}}' 2>/dev/null || echo "N/A")
+    TAMPERED_DIGEST=$(docker inspect "${TAMPERED_IMAGE}:latest" --format='{{index .RepoDigests 0}}' 2>/dev/null || echo "N/A")
+    
+    echo "Secure image digest: ${SECURE_DIGEST}"
+    echo "Tampered image digest: ${TAMPERED_DIGEST}"
+    
+    if [[ "${SECURE_DIGEST}" != "${TAMPERED_DIGEST}" ]]; then
+        echo_success "Digests are different - tampering can be detected through digest comparison"
+    else
+        echo_warning "Digests are the same (unexpected)"
+    fi
+}
 
-# Calculate differences for both scanners
-GRYPE_TOTAL_DIFF=$((GRYPE_ORIG_TOTAL - GRYPE_CLEAN_TOTAL))
-GRYPE_CRITICAL_DIFF=$((GRYPE_ORIG_CRITICAL - GRYPE_CLEAN_CRITICAL))
-GRYPE_HIGH_DIFF=$((GRYPE_ORIG_HIGH - GRYPE_CLEAN_HIGH))
-TRIVY_TOTAL_DIFF=$((TRIVY_ORIG_TOTAL - TRIVY_CLEAN_TOTAL))
-TRIVY_CRITICAL_DIFF=$((TRIVY_ORIG_CRITICAL - TRIVY_CLEAN_CRITICAL))
-TRIVY_HIGH_DIFF=$((TRIVY_ORIG_HIGH - TRIVY_CLEAN_HIGH))
+# Show supply chain security summary
+show_summary() {
+    echo_header "Supply Chain Security Summary"
+    
+    echo -e "${GREEN}Key Findings:${NC}"
+    echo
+    echo -e "1. ${BLUE}Image Signing:${NC}"
+    echo "   - Original image was successfully signed with cosign"
+    echo "   - Tampered image has no valid signature"
+    echo "   - Signature verification detects tampering"
+    echo
+    echo -e "2. ${BLUE}Digest Verification:${NC}"
+    echo "   - Image digests change when content is modified"
+    echo "   - Digest pinning can prevent use of tampered images"
+    echo "   - However, not all environments use digest pinning"
+    echo
+    echo -e "3. ${BLUE}Provenance & SLSA:${NC}"
+    echo "   - Full provenance tracking provides additional security"
+    echo "   - Even when digest pinning isn't used, provenance can detect issues"
+    echo "   - Supply chain attacks can be mitigated through proper verification"
+    echo
+    echo -e "4. ${BLUE}Best Practices:${NC}"
+    echo "   - Always verify image signatures in production"
+    echo "   - Use digest pinning when possible"
+    echo "   - Implement SLSA provenance tracking"
+    echo "   - Monitor for unexpected package modifications"
+    echo
+    echo -e "${YELLOW}Images created:${NC}"
+    echo "- ${SECURE_IMAGE}:latest (signed, verified)"
+    echo "- ${TAMPERED_IMAGE}:latest (tampered, unsigned)"
+    echo
+    echo -e "${YELLOW}Files created:${NC}"
+    echo "- cosign.key (private key)"
+    echo "- cosign.pub (public key)"
+}
 
-echo
-echo -e "${RED}Key Findings:${NC}"
-echo "• Grype: Removed $GRYPE_TOTAL_DIFF vulnerabilities, eliminated $GRYPE_CRITICAL_DIFF CRITICAL and $GRYPE_HIGH_DIFF HIGH severity"
-echo "• Trivy: Removed $TRIVY_TOTAL_DIFF vulnerabilities, eliminated $TRIVY_CRITICAL_DIFF CRITICAL and $TRIVY_HIGH_DIFF HIGH severity"
-echo "• Dual-layer evasion: Removed package metadata AND renamed vulnerable binaries"
-echo "• CRITICAL CVE-2025-57807 in ImageMagick now invisible to both scanners"
-echo "• HIGH CVE-2025-8194 in Python/curl now evades both package and binary detection"
-echo "• Same vulnerable code execution paths remain functional under new names"
-echo
-echo -e "${YELLOW}Attack Sophistication:${NC}"
-echo "• Layer 1: Package metadata manipulation (removes deb-type detections)"
-echo "• Layer 2: Binary renaming (evades binary-type detections)"
-echo "• Result: Complete evasion of multiple scanner detection methods"
-echo "• Vulnerable binaries accessible as Python, Python3, Curl instead of python, python3, curl"
-echo "• Attack maintains full functionality while achieving maximum stealth"
-echo
-echo -e "${YELLOW}Security Impact:${NC}"
-echo "• Demonstrates sophisticated multi-vector vulnerability hiding techniques"
-echo "• Shows scanner dependency on both metadata AND filename patterns"
-echo "• CRITICAL and HIGH severity vulnerabilities completely hidden from detection"
-echo "• Both major scanners (Grype & Trivy) defeated by combined approach"
-echo "• Attackers could hide life-critical vulnerabilities from enterprise security tools"
-echo "• Organizations might achieve 'clean' compliance scans while remaining highly vulnerable"
-echo
-echo -e "${GREEN}Demo completed!${NC}"
-echo "Cleanup: docker rmi $CLEANED_IMAGE"
+# Cleanup function
+cleanup() {
+    echo_header "Cleanup"
+    
+    read -p "Remove created images and keys? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        docker rmi "${SECURE_IMAGE}:latest" "${TAMPERED_IMAGE}:latest" 2>/dev/null || true
+        rm -f cosign.key cosign.pub
+        echo_success "Cleanup completed"
+    else
+        echo "Cleanup skipped. Remember to clean up manually if needed."
+    fi
+}
+
+# Main execution
+main() {
+    echo_header "Sigstore Supply Chain Security Demo"
+    echo "This demo shows how image signing and verification can detect tampering"
+    
+    check_prerequisites
+    start_local_registry
+    prepare_base_image
+    generate_signing_keys
+    sign_and_push_secure_image
+    create_tampered_image
+    verify_signatures
+    compare_images
+    demonstrate_digest_verification
+    show_summary
+    
+    echo -e "\n${GREEN}Demo completed successfully!${NC}"
+    
+    # Offer cleanup
+    cleanup
+}
+
+# Run main function
+main "$@"
