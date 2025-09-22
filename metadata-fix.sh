@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Script to demonstrate vulnerability scanner dependence on package metadata
-# Removes libc6 and libc-bin from dpkg status while leaving binaries intact
+# Removes packages from dpkg status while leaving binaries intact
+# Use --fix-it flag to perform metadata manipulation
 
 set -e
 
@@ -15,11 +16,52 @@ NC='\033[0m' # No Color
 # Configuration
 ORIGINAL_IMAGE="python:3.12@sha256:1cb6108b64a4caf2a862499bf90dc65703a08101e8bfb346a18c9d12c0ed5b7e"
 CLEANED_IMAGE="python:3.12-cleaned"
+PERFORM_MANIPULATION=false
 
-echo -e "${BLUE}=== DPKG Metadata Manipulation Demo ===${NC}"
-echo -e "${YELLOW}Demonstrates how removing package metadata fools vulnerability scanners${NC}"
-echo -e "${YELLOW}Target: ImageMagick (CRITICAL CVE-2025-57807), Python, Curl, Expat, linux-libc-dev packages${NC}"
-echo
+# Show help information
+show_help() {
+    cat << EOF
+Vulnerability Scanner Metadata Dependence Demonstration
+
+Usage: $0 [OPTIONS]
+
+OPTIONS:
+    --fix-it         Perform metadata manipulation to demonstrate scanner evasion
+                    (Without this flag, only scans the original image)
+    -h, --help       Show this help message
+
+EXAMPLES:
+    $0               # Only scan original image and show baseline results
+    $0 --fix-it      # Perform manipulation and show before/after comparison
+
+WARNING: This script is for security research and educational purposes only.
+The --fix-it flag demonstrates how package metadata manipulation can evade
+vulnerability scanners, which could be misused by malicious actors.
+
+EOF
+}
+
+# Parse command line arguments
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --fix-it)
+                PERFORM_MANIPULATION=true
+                echo -e "${YELLOW}Metadata manipulation enabled${NC}"
+                shift
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Unknown option: $1${NC}"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
 
 # Function to print section headers
 print_section() {
@@ -39,7 +81,20 @@ truncate_image_name() {
     fi
 }
 
-# Step 1: Scan original image
+# Parse command line arguments first
+parse_arguments "$@"
+
+echo -e "${BLUE}=== DPKG Metadata Analysis Demo ===${NC}"
+if [[ "$PERFORM_MANIPULATION" == true ]]; then
+    echo -e "${YELLOW}Mode: Metadata manipulation demonstration (--fix-it enabled)${NC}"
+    echo -e "${YELLOW}Target: ImageMagick (CRITICAL CVE-2025-57807), Python, Curl, Expat, linux-libc-dev packages${NC}"
+else
+    echo -e "${YELLOW}Mode: Baseline scan only (use --fix-it to enable manipulation)${NC}"
+    echo -e "${YELLOW}Scanning: $ORIGINAL_IMAGE${NC}"
+fi
+echo
+
+# Step 1: Scan original image (always performed)
 print_section "Step 1: Scanning Original Image"
 echo "Scanning $ORIGINAL_IMAGE with Grype..."
 GRYPE_ORIGINAL=$(grype "$ORIGINAL_IMAGE" --output json 2>/dev/null)
@@ -61,7 +116,27 @@ TRIVY_ORIG_MEDIUM=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]?
 TRIVY_ORIG_LOW=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW")] | length' 2>/dev/null || echo "0")
 TRIVY_ORIG_TOTAL=$(echo "$TRIVY_ORIGINAL" | jq '[.Results[]?.Vulnerabilities[]?] | length' 2>/dev/null || echo "0")
 
-# Step 2: Manipulate metadata
+# Get truncated image name for display
+ORIG_DISPLAY=$(truncate_image_name "$ORIGINAL_IMAGE")
+
+if [[ "$PERFORM_MANIPULATION" == false ]]; then
+    # Show baseline results only
+    print_section "Baseline Vulnerability Scan Results"
+    echo
+    echo -e "${BLUE}=== Original Image Vulnerability Scan ===${NC}"
+    echo "┌─────────────────────────────────┬─────────────┬──────┬────────┬─────┬───────┐"
+    echo "│ Image                           │ Scanner     │ Crit │ High   │ Med │ Low   │"
+    echo "├─────────────────────────────────┼─────────────┼──────┼────────┼─────┼───────┤"
+    printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "$ORIG_DISPLAY" "Grype" "$GRYPE_ORIG_CRITICAL" "$GRYPE_ORIG_HIGH" "$GRYPE_ORIG_MEDIUM" "$GRYPE_ORIG_LOW"
+    printf "│ %-31s │ %-11s │ %-4s │ %-6s │ %-3s │ %-5s │\n" "" "Trivy" "$TRIVY_ORIG_CRITICAL" "$TRIVY_ORIG_HIGH" "$TRIVY_ORIG_MEDIUM" "$TRIVY_ORIG_LOW"
+    echo "└─────────────────────────────────┴─────────────┴──────┴────────┴─────┴───────┘"
+    echo
+    echo -e "${GREEN}Baseline scan completed.${NC}"
+    echo -e "${YELLOW}Use --fix-it flag to demonstrate metadata manipulation evasion techniques.${NC}"
+    exit 0
+fi
+
+# Continue with manipulation if --fix-it flag is provided
 print_section "Step 2: Manipulating Package Metadata"
 echo "Starting container to modify dpkg status file..."
 
@@ -199,7 +274,7 @@ docker commit "$CONTAINER_ID" "$CLEANED_IMAGE" >/dev/null
 docker stop "$CONTAINER_ID" >/dev/null
 docker rm "$CONTAINER_ID" >/dev/null
 
-echo -e "${GREEN}✓ Metadata-cleaned image created${NC}"
+echo -e "${GREEN}Metadata-cleaned image created${NC}"
 
 # Step 3: Scan cleaned image
 print_section "Step 3: Scanning Cleaned Image"
@@ -226,8 +301,6 @@ TRIVY_CLEAN_TOTAL=$(echo "$TRIVY_CLEANED" | jq '[.Results[]?.Vulnerabilities[]?]
 # Step 4: Display results and analysis
 print_section "Step 4: Results Comparison"
 
-# Get truncated image names for display
-ORIG_DISPLAY=$(truncate_image_name "$ORIGINAL_IMAGE")
 CLEAN_DISPLAY="$CLEANED_IMAGE"
 
 # Display results table

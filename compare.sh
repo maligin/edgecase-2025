@@ -18,7 +18,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-DEFAULT_IMAGES="alpine:3.19 cgr.dev/chainguard/wolfi-base:latest debian:latest ubuntu:22.04"
+DEFAULT_IMAGE_FILE="base_images.txt"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_BASE_DIR="scanner_results"
 OUTPUT_DIR="$OUTPUT_BASE_DIR/$TIMESTAMP"
@@ -34,13 +34,11 @@ Container Security Scanner Comparison Script
 Usage: $0 [OPTIONS]
 
 OPTIONS:
-    --image-file FILE    Use images from the specified file instead of hardcoded defaults
-                        File should contain one image per line, empty lines and # comments ignored
+    --image-file FILE    Use images from the specified file (default: $DEFAULT_IMAGE_FILE)
     -h, --help          Show this help message
 
 EXAMPLES:
-    $0                           # Use hardcoded default images
-    $0 --image-file images.txt   # Use images from images.txt file
+    $0                           # Use default base_images.txt file
     $0 --image-file custom.txt   # Use images from custom.txt file
 
 IMAGE FILE FORMAT:
@@ -53,6 +51,18 @@ Each line should contain one container image reference:
 The script compares Trivy and Grype vulnerability scanning results, showing
 comprehensive vulnerability analysis including unfixed vulnerabilities across
 all severity levels.
+
+SETUP:
+Create a base_images.txt file in the same directory as this script with your
+desired container images, one per line. Example content:
+
+    # Minimal base images
+    alpine:3.19@sha256:3be987e6cde1d07e873c012bf6cfe941e6e85d16ca5fc5b8bedc675451d2de67
+    cgr.dev/chainguard/wolfi-base:latest@sha256:0e09bcd548cf2dfb9a3fd40af1a7389aa8c16b428de4e8f72b085f015694ce3d
+    
+    # Traditional distributions
+    debian:latest@sha256:833c135acfe9521d7a0035a296076f98c182c542a2b6b5a0fd7063d355d696be
+    ubuntu:22.04@sha256:4e0171b9275e12d375863f2b3ae9ce00a4c53ddda176bd55868df97ac6f21a6e
 
 EOF
 }
@@ -89,60 +99,70 @@ parse_arguments() {
 mkdir -p "$OUTPUT_BASE_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# Load images from file or use defaults
+# Load images from file
 load_images() {
+    local file_to_use
+    
+    # Determine which file to use
     if [ -n "$IMAGE_FILE" ]; then
-        # Custom image file specified via --image-file flag
-        if [ -f "$IMAGE_FILE" ] && [ -s "$IMAGE_FILE" ]; then
-            echo -e "${YELLOW}Loading images from specified file: $IMAGE_FILE${NC}"
-            
-            # Read images from file, skip empty lines and comments
-            IMAGES=""
-            while IFS= read -r line || [ -n "$line" ]; do
-                if [ -n "$line" ]; then
-                    # Trim whitespace
-                    trimmed_line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                    # Skip comments and empty lines
-                    case "$trimmed_line" in
-                        \#*|"") continue ;;
-                        *) IMAGES="$IMAGES $trimmed_line" ;;
-                    esac
-                fi
-            done < "$IMAGE_FILE"
-            
-            if [ -z "$IMAGES" ]; then
-                echo -e "${RED}Error: $IMAGE_FILE exists but contains no valid images${NC}"
-                echo -e "${YELLOW}Please check the file format and try again${NC}"
-                exit 1
-            else
-                # Count images
-                image_count=0
-                for img in $IMAGES; do
-                    image_count=$((image_count + 1))
-                done
-                echo -e "${GREEN}✓ Loaded $image_count images from $IMAGE_FILE:${NC}"
-                for img in $IMAGES; do
-                    echo -e "${CYAN}  - $img${NC}"
-                done
+        file_to_use="$IMAGE_FILE"
+        echo -e "${YELLOW}Using custom image file: $file_to_use${NC}"
+    else
+        file_to_use="$DEFAULT_IMAGE_FILE"
+        echo -e "${YELLOW}Using default image file: $file_to_use${NC}"
+    fi
+    
+    # Check if file exists and is not empty
+    if [ -f "$file_to_use" ] && [ -s "$file_to_use" ]; then
+        echo -e "${GREEN}✓ Found image file: $file_to_use${NC}"
+        
+        # Read images from file, skip empty lines and comments
+        IMAGES=""
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ -n "$line" ]; then
+                # Trim whitespace
+                trimmed_line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                # Skip comments and empty lines
+                case "$trimmed_line" in
+                    \#*|"") continue ;;
+                    *) IMAGES="$IMAGES $trimmed_line" ;;
+                esac
             fi
-        else
-            echo -e "${RED}Error: Image file '$IMAGE_FILE' not found or is empty${NC}"
-            echo -e "${YELLOW}Please check the file path and try again${NC}"
+        done < "$file_to_use"
+        
+        if [ -z "$IMAGES" ]; then
+            echo -e "${RED}Error: $file_to_use exists but contains no valid images${NC}"
+            echo -e "${YELLOW}Please check the file format and try again${NC}"
+            echo -e "${CYAN}Expected format: one image per line, comments start with #${NC}"
             exit 1
+        else
+            # Count images
+            image_count=0
+            for img in $IMAGES; do
+                image_count=$((image_count + 1))
+            done
+            echo -e "${GREEN}✓ Loaded $image_count images from $file_to_use:${NC}"
+            for img in $IMAGES; do
+                echo -e "${CYAN}  - $img${NC}"
+            done
         fi
     else
-        # No --image-file flag provided, use hardcoded defaults
-        echo -e "${YELLOW}Using hardcoded default images${NC}"
-        IMAGES="$DEFAULT_IMAGES"
-        # Count images
-        image_count=0
-        for img in $IMAGES; do
-            image_count=$((image_count + 1))
-        done
-        echo -e "${GREEN}✓ Using $image_count default images:${NC}"
-        for img in $IMAGES; do
-            echo -e "${CYAN}  - $img${NC}"
-        done
+        if [ -n "$IMAGE_FILE" ]; then
+            echo -e "${RED}Error: Custom image file '$IMAGE_FILE' not found or is empty${NC}"
+        else
+            echo -e "${RED}Error: Default image file '$DEFAULT_IMAGE_FILE' not found or is empty${NC}"
+            echo -e "${YELLOW}Please create $DEFAULT_IMAGE_FILE with your desired container images${NC}"
+            echo -e "${CYAN}Example content:${NC}"
+            echo -e "${CYAN}# Minimal images${NC}"
+            echo -e "${CYAN}alpine:3.19${NC}"
+            echo -e "${CYAN}cgr.dev/chainguard/wolfi-base:latest${NC}"
+            echo -e "${CYAN}${NC}"
+            echo -e "${CYAN}# Traditional distributions${NC}"
+            echo -e "${CYAN}debian:latest${NC}"
+            echo -e "${CYAN}ubuntu:22.04${NC}"
+        fi
+        echo -e "${YELLOW}Please check the file path and try again${NC}"
+        exit 1
     fi
     echo ""
 }
@@ -154,7 +174,14 @@ get_display_name() {
     # Handle special cases first
     case "$image" in
         "cgr.dev/chainguard/wolfi-base:latest")
-            echo "wolfi:latest"
+            echo "wolfi-base:latest"
+            return
+            ;;
+        cgr.dev/chainguard/wolfi-base:latest@*)
+            # Handle wolfi with digest - remove registry path but keep digest
+            local digest_part="${image##*@sha256:}"
+            local short_digest="${digest_part:0:5}"
+            echo "wolfi-base:latest@${short_digest}..."
             return
             ;;
     esac
@@ -183,7 +210,7 @@ echo -e "${BLUE}=== Container Security Scanner Comparison ===${NC}"
 # Parse command line arguments first
 parse_arguments "$@"
 
-# Load images from file or use defaults
+# Load images from file
 load_images
 
 echo -e "${CYAN}Testing images: $IMAGES${NC}"
@@ -405,7 +432,7 @@ EOF
             local low_nofix_md="-"; [ "$low_uf_t" -gt 0 ] && low_nofix_md="$low_uf_t"
             local unk_nofix_md="-"; [ "$unk_uf_t" -gt 0 ] && unk_nofix_md="$unk_uf_t"
             
-            echo "| $display_name | Trivy | $total_t | $crit_t | $high_t | $med_t | $low_t | $unk_t | $crit_nofix_md | $high_nofix_md | $med_nofix_md | $low_nofix_md | $unk_nofix_md | Direct image scan |" >> "$report_file"
+            echo "| $display_name | Trivy | $total_t | $crit_t | $high_t | $med_t | $low_t | $unk_t | $crit_nofix_md | $high_nofix_md | $med_nofix_md | $low_nofix_md | $unk_nofix_md | Base image scan |" >> "$report_file"
         fi
         
         # Grype results  
@@ -434,7 +461,7 @@ EOF
             local low_nofix_md="-"; [ "$low_uf_g" -gt 0 ] && low_nofix_md="$low_uf_g"
             local other_nofix_md="-"; [ "$other_uf_g" -gt 0 ] && other_nofix_md="$other_uf_g"
             
-            echo "| $display_name | Grype | $total_g | $crit_g | $high_g | $med_g | $low_g | $other_g | $crit_nofix_md | $high_nofix_md | $med_nofix_md | $low_nofix_md | $other_nofix_md | Direct image scan |" >> "$report_file"
+            echo "| $display_name | Grype | $total_g | $crit_g | $high_g | $med_g | $low_g | $other_g | $crit_nofix_md | $high_nofix_md | $med_nofix_md | $low_nofix_md | $other_nofix_md | Base image scan |" >> "$report_file"
         fi
     done
     
@@ -472,15 +499,15 @@ EOF
 6. **Automate Comparison**: Regular comparative analysis reveals scanner behavior patterns
 
 ## Technical Details:
-- **Image Source**: Images from hardcoded defaults or custom file via --image-file flag
+- **Image Source**: Images loaded from base_images.txt or custom file via --image-file flag
 - **Trivy Configuration**: `--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --ignore-unfixed=false`
 - **Grype Configuration**: `--only-fixed=false` (includes all severities by default)
 - **Focus**: Complete vulnerability landscape including unfixed and low-severity issues
 
 ## Image Configuration:
-By default, the script uses hardcoded images. To use custom images, use the --image-file flag:
+By default, the script uses base_images.txt. To use custom images, use the --image-file flag:
 ```bash
-./script.sh --image-file my-images.txt
+./compare.sh --image-file my-images.txt
 ```
 
 Image file format - each line should contain one container image reference:
@@ -510,8 +537,8 @@ EOF
 print_results_table() {
     echo ""
     echo -e "${BLUE}=== COMPREHENSIVE SCAN RESULTS (ALL SEVERITIES + UNFIXED) ===${NC}"
-    printf "${YELLOW}%-25s %-8s %-6s %-6s %-6s %-6s %-6s %-6s %-10s %-10s %-10s %-10s %-10s${NC}\n" "Image" "Scanner" "Total" "Crit" "High" "Med" "Low" "Other" "Crit(nofix)" "High(nofix)" "Med(nofix)" "Low(nofix)" "Other(nofix)"
-    echo "-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+    printf "${YELLOW}%-35s %-8s %-6s %-6s %-6s %-6s %-6s %-6s %-10s %-10s %-10s %-10s %-10s${NC}\n" "Image" "Scanner" "Total" "Crit" "High" "Med" "Low" "Other" "Crit(nofix)" "High(nofix)" "Med(nofix)" "Low(nofix)" "Other(nofix)"
+    echo "-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
     
     for image in $IMAGES; do
         local safe_name=$(echo "$image" | tr '/:' '_')
@@ -539,7 +566,7 @@ print_results_table() {
             local low_nofix_display="-"; [ "$low_uf_t" -gt 0 ] && low_nofix_display="$low_uf_t"
             local unk_nofix_display="-"; [ "$unk_uf_t" -gt 0 ] && unk_nofix_display="$unk_uf_t"
             
-            printf "%-25s ${CYAN}%-8s${NC} %-6s %-6s %-6s %-6s %-6s %-6s %-10s %-10s %-10s %-10s %-10s\n" \
+            printf "%-35s ${CYAN}%-8s${NC} %-6s %-6s %-6s %-6s %-6s %-6s %-10s %-10s %-10s %-10s %-10s\n" \
                 "$display_name" "Trivy" "$total_t" "$crit_t" "$high_t" "$med_t" "$low_t" "$unk_t" \
                 "$crit_nofix_display" "$high_nofix_display" "$med_nofix_display" "$low_nofix_display" "$unk_nofix_display"
         fi
@@ -570,7 +597,7 @@ print_results_table() {
             local low_nofix_display="-"; [ "$low_uf_g" -gt 0 ] && low_nofix_display="$low_uf_g"
             local other_nofix_display="-"; [ "$other_uf_g" -gt 0 ] && other_nofix_display="$other_uf_g"
             
-            printf "%-25s ${PURPLE}%-8s${NC} %-6s %-6s %-6s %-6s %-6s %-6s %-10s %-10s %-10s %-10s %-10s\n" \
+            printf "%-35s ${PURPLE}%-8s${NC} %-6s %-6s %-6s %-6s %-6s %-6s %-10s %-10s %-10s %-10s %-10s\n" \
                 "$display_name" "Grype" "$total_g" "$crit_g" "$high_g" "$med_g" "$low_g" "$other_g" \
                 "$crit_nofix_display" "$high_nofix_display" "$med_nofix_display" "$low_nofix_display" "$other_nofix_display"
         fi
