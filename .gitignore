@@ -6,3 +6,6 @@
 sbom_scanner_results/
 scanner_results/
 syft-sboms/
+
+# Other stuff
+demo[0-9]*
