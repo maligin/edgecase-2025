@@ -1,5 +1,6 @@
 # Ignore Git internals (in case of nested repos)
 .git/
+.DS_Store
 
 # Ignore scanner results
 sbom_scanner_results/
